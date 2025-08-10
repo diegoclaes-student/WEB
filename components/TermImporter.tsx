@@ -105,10 +105,14 @@ export default function TermImporter(props: TermImporterProps) {
       <div style={{ display: 'grid', gap: 8 }}>
         <label>
           Fichier CSV:
-          <input type="file" accept=".csv,text/csv,text/tab-separated-values,.tsv" onChange={(e) => {
-            const f = e.target.files?.[0];
-            if (f) void handleFile(f);
-          }} />
+          <input
+            type="file"
+            accept=".csv,text/csv,text/tab-separated-values,.tsv"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) void handleFile(f);
+            }}
+          />
         </label>
 
         <label>
