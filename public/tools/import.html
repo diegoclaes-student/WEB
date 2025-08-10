@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <title>Import CSV / Excel</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 20px; display: grid; gap: 16px; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border-bottom: 1px solid #e5e5e5; padding: 6px; text-align: left; vertical-align: top; }
+    th { border-bottom: 1px solid #ccc; }
+    textarea { width: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+    .panel { border: 1px solid #ddd; border-radius: 6px; padding: 12px; }
+    .muted { color: #666; }
+  </style>
+</head>
+<body>
+  <h3>Import de termes (CSV / Excel)</h3>
+
+  <div class="panel">
+    <div class="row">
+      <label>Fichier CSV:
+        <input id="file" type="file" accept=".csv,text/csv,text/tab-separated-values,.tsv" />
+      </label>
+      <label class="row"><input id="hasHeader" type="checkbox" checked /> Première ligne = en-tête</label>
+      <label>Délimiteur:
+        <select id="delimiter">
+          <option value="auto">Auto</option>
+          <option value=",">Virgule (,)</option>
+          <option value=";">Point-virgule (;)</option>
+          <option value="\t">Tabulation (TSV)</option>
+          <option value="|">Barre verticale (|)</option>
+        </select>
+      </label>
+      <label>Cible (liste):
+        <input id="targetList" type="text" placeholder="Nom de la liste (optionnel)" />
+      </label>
+    </div>
+    <label>Coller depuis Excel / Google Sheets:
+      <textarea id="raw" rows="8" placeholder="Collez ici (Ctrl/Cmd+V)"></textarea>
+    </label>
+  </div>
+
+  <div id="mappingPanel" class="panel" style="display:none">
+    <div style="margin-bottom:8px;font-weight:600">Mapping des colonnes</div>
+    <div style="overflow-x:auto">
+      <table id="preview"></table>
+    </div>
+  </div>
+
+  <div class="row">
+    <button id="btnImport" disabled>Exporter JSON</button>
+    <span id="stats" class="muted">Aucun élément</span>
+  </div>
+
+  <script>
+    // --- CSV utils (mini) ---
+    const stripBOM = s => (s.charCodeAt(0) === 0xFEFF ? s.slice(1) : s);
+    function sniffDelimiter(input, candidates = [',',';','\t','|']) {
+      const text = stripBOM(input);
+      const lines = text.split(/\r\n|\n|\r/).slice(0, 10);
+      if (!lines.length) return ',';
+      let best = { d: ',', score: -1 };
+      for (const d of candidates) {
+        let counts = 0, nonZero = 0;
+        for (const line of lines) {
+          const c = line.split(d).length - 1;
+          counts += c; if (c > 0) nonZero++;
+        }
+        const score = nonZero === 0 ? -1 : counts + nonZero * 0.1;
+        if (score > best.score) best = { d, score };
+      }
+      return best.d;
+    }
+    function parseDelimited(input, delimiter) {
+      const text = stripBOM(input);
+      const rows = [];
+      let row = [], field = '', inQuotes = false;
+      const pushField = () => { row.push(field); field = ''; };
+      const pushRow = () => { if (row.length && !(row.length===1 && row[0]==='')) rows.push(row); row = []; };
+      for (let i = 0; i < text.length; i++) {
+        const c = text[i];
+        if (inQuotes) {
+          if (c === '"') {
+            const next = text[i+1];
+            if (next === '"') { field += '"'; i++; } else { inQuotes = false; }
+          } else field += c;
+          continue;
+        }
+        if (c === '"') { inQuotes = true; continue; }
+        if (c === delimiter) { pushField(); continue; }
+        if (c === '\n') { pushField(); pushRow(); continue; }
+        if (c === '\r') { if (text[i+1] === '\n') i++; pushField(); pushRow(); continue; }
+        field += c;
+      }
+      pushField(); if (row.length > 1 || row[0] !== '') pushRow();
+      return rows;
+    }
+    function parseAuto(input) {
+      const d = sniffDelimiter(input);
+      return { rows: parseDelimited(input, d), delimiter: d };
+    }
+    function mapRows(rows, mapping, { hasHeader = true, defaultList } = {}) {
+      const start = hasHeader ? 1 : 0;
+      const items = []; let skipped = 0; const lists = {};
+      for (let r = start; r < rows.length; r++) {
+        const row = rows[r] || [];
+        const obj = { term: '' }; let rowList = defaultList;
+        for (let c = 0; c < row.length; c++) {
+          const role = mapping[c]; if (!role || role === 'ignore') continue;
+          const val = (row[c] ?? '').trim(); if (!val) continue;
+          if (role === 'term') obj.term = val;
+          else if (role === 'definition') obj.definition = val;
+          else if (role === 'list') rowList = val;
+          else if (role === 'tags') {
+            const parts = val.split(/[;,]/).map(s => s.trim()).filter(Boolean);
+            if (parts.length) obj.tags = (obj.tags || []).concat(parts);
+          } else if (role.startsWith('extra:')) {
+            const key = role.slice(6) || 'extra'; obj[key] = val;
+          }
+        }
+        if (!obj.term) { skipped++; continue; }
+        if (rowList) obj.list = rowList;
+        if (obj.list) lists[obj.list] = (lists[obj.list] ?? 0) + 1;
+        items.push(obj);
+      }
+      return { items, stats: { rows: rows.length - (hasHeader ? 1 : 0), imported: items.length, skipped, lists } };
+    }
+
+    // --- UI logic ---
+    const $ = (id) => document.getElementById(id);
+    const file = $('file'), raw = $('raw'), delimSel = $('delimiter'), hasHeader = $('hasHeader');
+    const targetList = $('targetList'), preview = $('preview'), panel = $('mappingPanel');
+    const btnImport = $('btnImport'), stats = $('stats');
+
+    let parsed = { rows: [], delimiter: ',' };
+    let mapping = {};
+
+    function renderPreview() {
+      preview.innerHTML = '';
+      const rows = parsed.rows.slice(0, 5);
+      if (!rows.length) { panel.style.display = 'none'; btnImport.disabled = true; stats.textContent = 'Aucun élément'; return; }
+      panel.style.display = 'block';
+
+      // Guess mapping if empty
+      if (Object.keys(mapping).length === 0 && rows[0]) {
+        mapping = {};
+        if (rows[0].length >= 1) mapping[0] = 'term';
+        if (rows[0].length >= 2) mapping[1] = 'definition';
+      }
+
+      const thead = document.createElement('thead');
+      const trh = document.createElement('tr');
+      rows[0].forEach((_, c) => {
+        const th = document.createElement('th');
+        th.innerHTML = `Col ${c+1}<div style="margin-top:4px"></div>`;
+        const div = th.lastChild;
+        const sel = document.createElement('select');
+        ['ignore','term','definition','list','tags','extra'].forEach(v => {
+          const opt = document.createElement('option');
+          opt.value = v; opt.textContent = v === 'ignore' ? 'Ignorer' :
+            v === 'term' ? 'Terme' :
+            v === 'definition' ? 'Définition' :
+            v === 'list' ? 'Liste' :
+            v === 'tags' ? 'Tags' : 'Extra...';
+          if (!mapping[c] && v==='ignore') opt.selected = true;
+          if (mapping[c] && (mapping[c].startsWith?.('extra:') ? v==='extra' : mapping[c]===v)) opt.selected = true;
+          sel.appendChild(opt);
+        });
+        sel.addEventListener('change', () => {
+          if (sel.value === 'extra') {
+            const key = prompt('Nom du champ extra:', (mapping[c]?.startsWith?.('extra:') ? mapping[c].slice(6) : 'extra')) || 'extra';
+            mapping[c] = `extra:${key}`;
+          } else {
+            mapping[c] = sel.value;
+          }
+        });
+        div.appendChild(sel);
+        trh.appendChild(th);
+      });
+      thead.appendChild(trh);
+      preview.appendChild(thead);
+
+      const tbody = document.createElement('tbody');
+      rows.forEach(r => {
+        const tr = document.createElement('tr');
+        r.forEach(cell => {
+          const td = document.createElement('td');
+          td.textContent = cell;
+          tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
+      });
+      preview.appendChild(tbody);
+
+      // Stats
+      const { items, stats: st } = mapRows(parsed.rows, mapping, { hasHeader: hasHeader.checked, defaultList: targetList.value || undefined });
+      btnImport.disabled = items.length === 0;
+      stats.textContent = items.length ? `${items.length} éléments prêts • ignorés: ${st.skipped}` : 'Aucun élément';
+    }
+
+    function reparse() {
+      const text = raw.value.trim();
+      if (!text) { parsed = { rows: [], delimiter: ',' }; renderPreview(); return; }
+      const sel = delimSel.value;
+      parsed = sel === 'auto' ? parseAuto(text) : { rows: parseDelimited(text, sel), delimiter: sel };
+      renderPreview();
+    }
+
+    file.addEventListener('change', async (e) => {
+      const f = e.target.files && e.target.files[0];
+      if (!f) return;
+      const text = await f.text();
+      raw.value = text;
+      delimSel.value = 'auto';
+      mapping = {};
+      reparse();
+    });
+
+    raw.addEventListener('input', () => { mapping = {}; reparse(); });
+    delimSel.addEventListener('change', reparse);
+    hasHeader.addEventListener('change', renderPreview);
+    targetList.addEventListener('input', renderPreview);
+
+    btnImport.addEventListener('click', () => {
+      const { items, stats: st } = mapRows(parsed.rows, mapping, { hasHeader: hasHeader.checked, defaultList: targetList.value || undefined });
+      const blob = new Blob([JSON.stringify({ items, stats: st }, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'import.json'; a.click();
+      URL.revokeObjectURL(url);
+    });
+  </script>
+</body>
+</html>
