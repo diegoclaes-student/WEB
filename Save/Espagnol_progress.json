@@ -1,0 +1,30 @@
+{
+  "list_path": "/Users/diegoclaes/Code/FlashLet/GPT/WEB/Liste/Espagnol.txt",
+  "scores": {
+    "Chène": {
+      "score": 0,
+      "is_difficult": false
+    },
+    "Pomme": {
+      "score": 0,
+      "is_difficult": false
+    },
+    "poireaux": {
+      "score": 0,
+      "is_difficult": false
+    },
+    "Nouggat": {
+      "score": 0,
+      "is_difficult": false
+    },
+    "Poire": {
+      "score": 0,
+      "is_difficult": false
+    },
+    "vre": {
+      "score": 0,
+      "is_difficult": false
+    }
+  },
+  "last_updated": "2025-08-10T15:00:23"
+}

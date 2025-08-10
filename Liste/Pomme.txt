@@ -1,0 +1,4 @@
+# Liste: Pomme
+# Ajoutez vos termes ci-dessous, un par ligne
+# Les lignes commençant par # sont des commentaires
+

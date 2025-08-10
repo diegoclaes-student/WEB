@@ -1,0 +1,10 @@
+# Liste: Espagnol
+# Ajoutez vos termes ci-dessous, un par ligne
+# Les lignes commençant par # sont des commentaires
+
+Chène
+Pomme
+poireaux
+Nouggat
+Poire
+vre
